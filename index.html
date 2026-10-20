@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1b2238" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="우리집 모험" />
+    <link rel="manifest" href="site.webmanifest" />
+    <link rel="apple-touch-icon" href="lock-icons/icon-192.png" />
+    <title>우리집 모험</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #1b2238; color: #eef1f8; font-family: system-ui, -apple-system, 'Apple SD Gothic Neo', sans-serif; }
+      main { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; }
+      form { width: min(340px, 100%); display: grid; gap: 14px; text-align: center; }
+      img { width: 88px; height: 88px; margin: 0 auto; border-radius: 20px; image-rendering: pixelated; }
+      h1 { margin: 4px 0 0; font-size: 22px; }
+      p { margin: 0; color: #aab3c8; font-size: 15px; line-height: 1.5; }
+      input, button { font: inherit; font-size: 17px; border-radius: 12px; padding: 14px 16px; border: 0; width: 100%; }
+      input { background: #2a3352; color: #fff; outline: 2px solid transparent; }
+      input:focus { outline-color: #6fa8ff; }
+      button { background: #f2c94c; color: #1b2238; font-weight: 700; cursor: pointer; }
+      button:disabled { opacity: .6; cursor: wait; }
+      .err { color: #ff8a80; min-height: 1.5em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <form id="f" autocomplete="off">
+        <img src="lock-icons/icon-192.png" alt="" />
+        <h1>우리집 모험</h1>
+        <p id="msg">가족 비밀번호를 넣어 주세요.<br />한 번 넣으면 이 기기에서는 다시 묻지 않아요.</p>
+        <input id="pw" type="password" autocomplete="current-password" placeholder="비밀번호" required />
+        <button id="go" type="submit">열기</button>
+        <p class="err" id="err" role="alert"></p>
+      </form>
+    </main>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const enc = new TextEncoder();
+
+      function idb() {
+        return new Promise((ok, no) => {
+          const r = indexedDB.open('family-lock', 1);
+          r.onupgradeneeded = () => r.result.createObjectStore('kv');
+          r.onsuccess = () => ok(r.result);
+          r.onerror = () => no(r.error);
+        });
+      }
+      async function kv(op, k, v) {
+        const db = await idb();
+        return new Promise((ok, no) => {
+          const tx = db.transaction('kv', op === 'get' ? 'readonly' : 'readwrite');
+          const r = op === 'get' ? tx.objectStore('kv').get(k) : tx.objectStore('kv').put(v, k);
+          r.onsuccess = () => ok(r.result);
+          r.onerror = () => no(r.error);
+        });
+      }
+
+      async function startGame() {
+        const reg = await navigator.serviceWorker.register('sw.js');
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) {
+          await new Promise((ok) => {
+            navigator.serviceWorker.addEventListener('controllerchange', ok, { once: true });
+            setTimeout(ok, 3000);
+          });
+        }
+        (navigator.serviceWorker.controller || reg.active)?.postMessage('key-updated');
+        location.reload();
+      }
+
+      async function unlock(pw) {
+        const lock = await (await fetch('lock.json', { cache: 'no-cache' })).json();
+        const base = await crypto.subtle.importKey('raw', enc.encode(pw.normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
+        const salt = Uint8Array.from(atob(lock.salt), (c) => c.charCodeAt(0));
+        const key = await crypto.subtle.deriveKey(
+          { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: lock.iter },
+          base, { name: 'AES-GCM', length: 256 }, false, ['decrypt'],
+        );
+        const m = new Uint8Array(await (await fetch('m.bin', { cache: 'no-cache' })).arrayBuffer());
+        await crypto.subtle.decrypt({ name: 'AES-GCM', iv: m.subarray(0, 12) }, key, m.subarray(12)); // 틀리면 여기서 실패
+        await kv('put', 'key', key); // 꺼낼 수 없는(non-extractable) 키로 이 기기에만 보관
+      }
+
+      $('f').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        $('err').textContent = '';
+        $('go').disabled = true;
+        $('go').textContent = '여는 중…';
+        try {
+          await unlock($('pw').value);
+        } catch (err) {
+          $('err').textContent = err && err.name === 'OperationError' ? '비밀번호가 달라요. 다시 넣어 주세요.' : '열지 못했어요. 인터넷 연결을 확인해 주세요.';
+          $('go').disabled = false;
+          $('go').textContent = '열기';
+          return;
+        }
+        await startGame();
+      });
+
+      (async () => {
+        if (!('serviceWorker' in navigator) || !window.crypto?.subtle || !window.indexedDB) {
+          $('msg').textContent = '이 브라우저에서는 열 수 없어요. 사파리나 크롬 최신 버전(사생활 보호 모드 아님)으로 열어 주세요.';
+          $('f').querySelectorAll('input,button').forEach((x) => (x.disabled = true));
+          return;
+        }
+        // 이미 비밀번호를 넣은 기기인데 잠금 화면이 보이면 (강력 새로고침 등) 한 번만 다시 연결
+        const key = await kv('get', 'key').catch(() => null);
+        const last = Number(sessionStorage.getItem('lock-retry') || 0);
+        if (key && Date.now() - last > 15000) {
+          sessionStorage.setItem('lock-retry', String(Date.now()));
+          $('msg').textContent = '여는 중…';
+          await startGame();
+          return;
+        }
+        $('pw').focus();
+      })();
+    </script>
+  </body>
+</html>
