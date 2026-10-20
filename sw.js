@@ -1,4 +1,4 @@
-// 복호화 서비스 워커 (배포 2026-10-20T14:18:30.634Z)
+// 복호화 서비스 워커 (배포 2026-10-20T15:16:07.256Z)
 // 잠금 화면에서 가족 비밀번호로 만든 키(IndexedDB)를 꺼내, 게임 파일 요청을 c/*.bin 암호문을 풀어 돌려준다.
 // 키가 없거나 틀리면 그냥 네트워크로 넘김 → 잠금 화면(index.html)이 보임.
 const ENC_CACHE = 'enc-v1';
@@ -102,8 +102,22 @@ async function serve(req, rel) {
   return new Response(body, { status: 200, headers: { 'Content-Type': entry[1] } });
 }
 
+/** PokéAPI 포켓몬 그림·움직이는 도트(공개 자료): 한 번 받으면 오프라인에서도 */
+async function pokeapi(req) {
+  const cache = await caches.open('pokeapi-v1');
+  const hit = await cache.match(req.url);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok || res.type === 'opaque') cache.put(req.url, res.clone());
+  return res;
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
+  if (req.method === 'GET' && req.url.startsWith('https://raw.githubusercontent.com/PokeAPI/sprites/')) {
+    e.respondWith(pokeapi(req).catch(() => fetch(req)));
+    return;
+  }
   if (req.method !== 'GET' || !req.url.startsWith(SCOPE)) return;
   let rel = decodeURIComponent(new URL(req.url).pathname.slice(new URL(SCOPE).pathname.length));
   if (rel === '' || rel.endsWith('/')) rel += 'index.html';
